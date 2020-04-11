@@ -142,7 +142,7 @@ def training_loop():
         dataloader_valid = DataLoader(dataset_valid, batch_size=BATCH_SIZE, num_workers=4, shuffle=True)
         dataloader_train = DataLoader(dataset_train, batch_size=BATCH_SIZE, num_workers=4, shuffle=False)
 
-        # model to device
+        # initialize a new model, send it to GPU
         model = Model()
         model.to(device)
 
@@ -159,7 +159,6 @@ def training_loop():
                                                        dataloader_train,
                                                        dataloader_valid)
         oof_preds[valid_idx, :] = val_preds.numpy()
-
         train_results = train_results + train_fold_results
 
         # Evaluate on test set
@@ -182,15 +181,20 @@ def training_loop():
 
         # Save predictions per fold
         submission_df[['healthy', 'multiple_diseases', 'rust', 'scab']] = torch.softmax(test_preds, dim=1)
-        submission_df.to_csv(f'submission_fold_{i_fold}.csv', index=False)
+        submission_df.to_csv(f'submissions/submission_fold_{i_fold}.csv', index=False)
 
-        # logits avg
+        # Each model predicts on test set, the predictions are averaged
         if submissions is None:
             submissions = test_preds / N_FOLDS
         else:
             submissions += test_preds / N_FOLDS
 
-        print(f"5-Folds CV score: {round(roc_auc_score(train_labels, oof_preds, average='macro'), 3)}")
+    print(f"5-Folds CV score: {round(roc_auc_score(train_labels, oof_preds, average='macro'), 3)}")
+
+    # All models trained
+    # Aggregate the predictions, get probabilities
+    submission_df[['healthy', 'multiple_diseases', 'rust', 'scab']] = torch.softmax(submissions, dim=1)
+    submission_df.to_csv('submissions/Plants_submission.csv', index=False)
 
 
 training_loop()
