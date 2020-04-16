@@ -304,6 +304,6 @@ def training_loop_single(N_EPOCHS, BATCH_SIZE, transforms_train=None, transforms
             'valid_score': roc_auc_score(valid_labels.data.cpu(), valid_preds.data.cpu(), average='macro')
         })
 
-    print(f'Validation score: {roc_auc_score(valid_labels, valid_preds, average="macro")}')
+    print(f'Validation score: {roc_auc_score(valid_labels.data.cpu(), valid_preds.data.cpu(), average="macro")}')
 
     return model, train_results
