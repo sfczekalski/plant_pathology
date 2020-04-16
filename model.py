@@ -1,4 +1,6 @@
-from imports import *
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision
 
 
 class Model(nn.Module):

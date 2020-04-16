@@ -1,4 +1,5 @@
-from globals import *
+import torch.nn as nn
+import torch.nn.functional as F
 
 
 class CrossEntropy(nn.Module):

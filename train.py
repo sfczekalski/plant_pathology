@@ -1,28 +1,20 @@
-from globals import *
-from imports import *
+import numpy as np
+import pandas as pd
+
+import torch
+import torch.optim as optim
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from torch.utils.data import DataLoader
+
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold
 from model import Model
 from dataset import PlantDataset
 from loss import CrossEntropy
 
-train_df = pd.read_csv(data_dir + 'train.csv')
 
-# For debugging.
-# train_df = train_df.sample(n=100)
-# train_df.reset_index(drop=True, inplace=True)
-
-train_labels = train_df.iloc[:, 1:].values
-
-# Need for the StratifiedKFold split
-train_y = train_labels[:, 2] + train_labels[:, 3] * 2 + train_labels[:, 1] * 3
-
-# Test dataloader
-submission_df = pd.read_csv(data_dir + 'sample_submission.csv')
-submission_df.iloc[:, 1:] = 0
-dataset_test = PlantDataset(df=submission_df, transforms=transforms_test)
-dataloader_test = DataLoader(dataset_test, batch_size=BATCH_SIZE, num_workers=4, shuffle=False)
-
-
-def train_one_fold(i_fold, model, criterion, optimizer, dataloader_train, dataloader_valid):
+def train_one_fold(i_fold, model, criterion, optimizer, N_EPOCHS, dataloader_train, dataloader_valid, device):
     """
     Train one fold. Data has already been split
 
@@ -111,21 +103,39 @@ def train_one_fold(i_fold, model, criterion, optimizer, dataloader_train, datalo
     return val_preds, train_fold_results
 
 
-def training_loop():
-    """"
-    Split the training data to N_FOLDS folds,
-    train separate models on resulting training sets,
-    validate them on out-of-folds instances,
-    average predictions on test set
+def training_loop(N_FOLDS=5, N_EPOCHS=10, BATCH_SIZE=64, transforms_train=None, transforms_valid=None, data_dir='data/',
+                  device=torch.device('cuda:0')):
     """
-    # The classes are imbalanced
-    folds = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=SEED)
-    oof_preds = np.zeros((train_df.shape[0], 4))
+    Function training the model.
+    It uses cross-validation to train separate models and predicts on test set.
+    :param N_FOLDS: Number of cross-validation splits
+    :param N_EPOCHS: Number of training epochs at each split
+    :param BATCH_SIZE: Batch size
+    :param transforms_train: Transformations of images that should be applied on training set
+    :param transforms_valid: Transformations of images that should be applied on validation / test set
+    :param data_dir: Path to directory with data
+    :param device: Device to use, by default it uses cuda gpu
+    :return: training results
+    """
 
-    submissions = None
+    # Read training data, get the labels to split the folds appropriately (the classes are imbalanced)
+    train_df = pd.read_csv(data_dir + 'train.csv')
+
+    train_labels = train_df.iloc[:, 1:].values
+    train_y = train_labels[:, 2] + train_labels[:, 3] * 2 + train_labels[:, 1] * 3
+
+    folds = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
+    oof_preds = np.zeros((train_df.shape[0], 4))
     train_results = []
 
-    # iterate over folds
+    # Test dataloader
+    submission_df = pd.read_csv(data_dir + 'sample_submission.csv')
+    submission_df.iloc[:, 1:] = 0
+    dataset_test = PlantDataset(df=submission_df, data_dir=data_dir, transforms=transforms_valid)
+    dataloader_test = DataLoader(dataset_test, batch_size=BATCH_SIZE, num_workers=4, shuffle=False)
+    submissions = None
+
+    # Train - iterate over folds
     for i_fold, (train_idx, valid_idx) in enumerate(folds.split(train_df, train_y)):
         print(f'Fold {i_fold+1} / {N_FOLDS}')
 
@@ -133,11 +143,11 @@ def training_loop():
         valid = train_df.iloc[valid_idx]
         valid.reset_index(drop=True, inplace=True)
 
-        train = train_df.iloc[train_df]
+        train = train_df.iloc[train_idx]
         train.reset_index(drop=True, inplace=True)
 
-        dataset_valid = PlantDataset(df=valid, transforms=transforms_valid)
-        dataset_train = PlantDataset(df=train, transforms=transforms_train)
+        dataset_valid = PlantDataset(df=valid, data_dir=data_dir, transforms=transforms_valid)
+        dataset_train = PlantDataset(df=train, data_dir=data_dir, transforms=transforms_train)
 
         dataloader_valid = DataLoader(dataset_valid, batch_size=BATCH_SIZE, num_workers=4, shuffle=True)
         dataloader_train = DataLoader(dataset_train, batch_size=BATCH_SIZE, num_workers=4, shuffle=False)
@@ -152,12 +162,8 @@ def training_loop():
 
         # train on folds, validate on oof instances
         # get validation predictions and results
-        val_preds, train_fold_results = train_one_fold(i_fold,
-                                                       model,
-                                                       criterion,
-                                                       optimizer,
-                                                       dataloader_train,
-                                                       dataloader_valid)
+        val_preds, train_fold_results = train_one_fold(i_fold, model, criterion, optimizer, N_EPOCHS,
+                                                       dataloader_train, dataloader_valid,  device)
         oof_preds[valid_idx, :] = val_preds.numpy()
         train_results = train_results + train_fold_results
 
@@ -189,12 +195,14 @@ def training_loop():
         else:
             submissions += test_preds / N_FOLDS
 
-    print(f"5-Folds CV score: {round(roc_auc_score(train_labels, oof_preds, average='macro'), 3)}")
+    print(f"Validation score: {round(roc_auc_score(train_labels, oof_preds, average='macro'), 3)}")
 
     # All models trained
     # Aggregate the predictions, get probabilities
     submission_df[['healthy', 'multiple_diseases', 'rust', 'scab']] = torch.softmax(submissions, dim=1)
     submission_df.to_csv('submissions/Plants_submission.csv', index=False)
 
+    return train_results
 
-training_loop()
+
+
