@@ -205,4 +205,105 @@ def training_loop(N_FOLDS=5, N_EPOCHS=10, BATCH_SIZE=64, transforms_train=None, 
     return train_results
 
 
+def training_loop_single(N_EPOCHS, BATCH_SIZE, transforms_train=None, transforms_valid=None, data_dir='data/',
+                         device=torch.device('cuda:0')):
+    """
+    Split the data to training and validation set and train one model.
+    :param N_EPOCHS: Number of training epochs at each split
+    :param BATCH_SIZE: Batch size
+    :param transforms_train: Transformations of images that should be applied on training set
+    :param transforms_valid: Transformations of images that should be applied on validation / test set
+    :param data_dir: Path to directory with data
+    :param device: Device to use, by default it uses cuda gpu
+    :return: trained model, training results
+    """
+    # Read DataFrame
+    df = pd.read_csv(data_dir + 'train.csv')
 
+    # Train - validation split
+    n = int(0.8 * df.shape[0])
+    np.random.seed(42)
+    train_idx = np.random.choice(df.index, n)
+    train_df = df.loc[train_idx]
+    train_df.reset_index(drop=True, inplace=True)
+
+    valid_idx = np.setdiff1d(df.index, train_idx)
+    valid_df = df.loc[valid_idx]
+    valid_df.reset_index(drop=True, inplace=True)
+
+    # Prepare Datasets and DataLoaders
+    train_dataset = PlantDataset(df=train_df, data_dir=data_dir, transforms=transforms_train)
+    valid_dataset = PlantDataset(df=valid_df, data_dir=data_dir, transforms=transforms_valid)
+
+    train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, num_workers=4, shuffle=True)
+    valid_dataloader = DataLoader(valid_dataset, batch_size=BATCH_SIZE, num_workers=4, shuffle=False)
+
+    # initialize model, optimzer and loss
+    model = Model()
+    model.to(device)
+    optimizer = optim.Adam(model.parameters(), lr=5e-5)
+    criterion = CrossEntropy()
+
+    train_results = []
+
+    for i in range(N_EPOCHS):
+        print(f'Epoch: {i+1} / {N_EPOCHS}')
+
+        # Train
+        model.train()
+        train_loss = 0.0
+        for step, batch in enumerate(train_dataloader):
+            images = batch[0]
+            labels = batch[1]
+
+            images = images.to(device, dtype=torch.float)
+            labels = labels.to(device, dtype=torch.float)
+
+            outputs = model(images)
+            loss = criterion(outputs, labels.squeeze(-1))
+
+            train_loss += loss.item()
+
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+        # Validate
+        model.eval()
+        valid_loss = 0.0
+        valid_labels = None
+        valid_preds = None
+        for step, batch in enumerate(valid_dataloader):
+            images = batch[0]
+            labels = batch[1]
+
+            images = images.to(device, dtype=torch.float)
+            labels = labels.to(device, dtype=torch.float)
+
+            if valid_labels is None:
+                valid_labels = labels.clone().squeeze(-1)
+            else:
+                valid_labels = torch.cat([valid_labels, labels.squeeze(-1)], dim=0)
+
+            with torch.no_grad():
+                outputs = model(images)
+                loss = criterion(outputs, labels.squeeze(-1))
+                valid_loss += loss.item()
+
+                preds = torch.softmax(outputs, dim=1).data.cpu()
+
+                if valid_preds is None:
+                    valid_preds = preds
+                else:
+                    valid_preds = torch.cat([valid_preds, preds], dim=0)
+
+        train_results.append({
+            'epoch': i,
+            'train_loss': train_loss / len(train_dataloader),
+            'valid_loss': valid_loss / len(valid_dataloader),
+            'valid_score': roc_auc_score(valid_labels, valid_preds, average='macro')
+        })
+
+    print(f'Validation score: {roc_auc_score(valid_labels, valid_preds, average="macro")}')
+
+    return model, train_results
